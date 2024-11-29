@@ -162,10 +162,13 @@ constexpr bool standard_unsigned_integer<unsigned long long int> = true;
 
 } // namespace
 
-constexpr int radix_2 = 2;
-constexpr int radix_8 = 8;
-constexpr int radix_10 = 10;
-constexpr int radix_16 = 16;
+enum Radix {
+  radix_i = -1,
+  radix_2 = 2,
+  radix_8 = 8,
+  radix_10 = 10,
+  radix_16 = 16
+};
 
 template <typename T>
 constexpr bool standard_integer =
@@ -257,7 +260,7 @@ inline auto do_from_chars(std::string_view s) -> T {
   return x; // unreachable
 }
 
-template <class T, auto Param = 0> struct parse_number {
+template <class T, auto Param> struct parse_number {
   auto operator()(std::string_view s) -> T {
     return do_from_chars<T, Param>(s);
   }
@@ -305,7 +308,7 @@ template <class T> struct parse_number<T, radix_16> {
   }
 };
 
-template <class T> struct parse_number<T> {
+template <class T> struct parse_number<T, radix_i> {
   auto operator()(std::string_view s) -> T {
     auto [ok, rest] = consume_hex_prefix(s);
     if (ok) {
@@ -706,8 +709,24 @@ public:
     if (m_default_value.has_value()) {
       var = std::any_cast<T>(m_default_value);
     }
-    action([&var](const auto &s) {
-      var = details::parse_number<T, details::radix_10>()(s);
+    action([&var, scan = m_scan_set_integer](const auto &s) {
+        switch (scan) {
+          case details::radix_i:
+            var = details::parse_number<T, details::radix_i>()(s);
+            break;
+          case details::radix_2:
+            var = details::parse_number<T, details::radix_2>()(s);
+            break;
+          case details::radix_8:
+            var = details::parse_number<T, details::radix_8>()(s);
+            break;
+          case details::radix_10:
+            var = details::parse_number<T, details::radix_10>()(s);
+            break;
+          case details::radix_16:
+            var = details::parse_number<T, details::radix_16>()(s);
+            break;
+        }
     });
     return *this;
   }
@@ -744,16 +763,34 @@ public:
     return *this;
   }
 
-  auto &store_into(std::vector<int> &var) {
+  template<typename T = int, typename std::enable_if<std::is_integral<T>::value>::type * = nullptr>
+  auto &store_into(std::vector<T> &var) {
     if (m_default_value.has_value()) {
-      var = std::any_cast<std::vector<int>>(m_default_value);
+      var = std::any_cast<std::vector<T>>(m_default_value);
     }
-    action([this, &var](const std::string &s) {
+    action([this, &var, scan = m_scan_set_integer](const std::string &s) {
       if (!m_is_used) {
         var.clear();
       }
       m_is_used = true;
-      var.push_back(details::parse_number<int, details::radix_10>()(s));
+
+      switch (scan) {
+        case details::radix_i:
+          var.push_back(details::parse_number<T, details::radix_i>()(s));
+          break;
+        case details::radix_2:
+          var.push_back(details::parse_number<T, details::radix_2>()(s));
+          break;
+        case details::radix_8:
+          var.push_back(details::parse_number<T, details::radix_8>()(s));
+          break;
+        case details::radix_10:
+          var.push_back(details::parse_number<T, details::radix_10>()(s));
+          break;
+        case details::radix_16:
+          var.push_back(details::parse_number<T, details::radix_16>()(s));
+          break;
+      }
     });
     return *this;
   }
@@ -807,37 +844,33 @@ public:
 
     if constexpr (is_one_of(Shape, 'd') && details::standard_integer<T>) {
       action(details::parse_number<T, details::radix_10>());
-    } else if constexpr (is_one_of(Shape, 'i') &&
-                         details::standard_integer<T>) {
-      action(details::parse_number<T>());
-    } else if constexpr (is_one_of(Shape, 'u') &&
-                         details::standard_unsigned_integer<T>) {
+      m_scan_set_integer = details::radix_10;
+    } else if constexpr (is_one_of(Shape, 'i') && details::standard_integer<T>) {
+      action(details::parse_number<T, details::radix_i>());
+      m_scan_set_integer = details::radix_i;
+    } else if constexpr (is_one_of(Shape, 'u') && details::standard_unsigned_integer<T>) {
       action(details::parse_number<T, details::radix_10>());
-    } else if constexpr (is_one_of(Shape, 'b') &&
-                         details::standard_unsigned_integer<T>) {
+      m_scan_set_integer = details::radix_10;
+    } else if constexpr (is_one_of(Shape, 'b') && details::standard_unsigned_integer<T>) {
       action(details::parse_number<T, details::radix_2>());
-    } else if constexpr (is_one_of(Shape, 'o') &&
-                         details::standard_unsigned_integer<T>) {
+      m_scan_set_integer = details::radix_2;
+    } else if constexpr (is_one_of(Shape, 'o') && details::standard_unsigned_integer<T>) {
       action(details::parse_number<T, details::radix_8>());
-    } else if constexpr (is_one_of(Shape, 'x', 'X') &&
-                         details::standard_unsigned_integer<T>) {
+      m_scan_set_integer = details::radix_8;
+    } else if constexpr (is_one_of(Shape, 'x', 'X') && details::standard_unsigned_integer<T>) {
       action(details::parse_number<T, details::radix_16>());
-    } else if constexpr (is_one_of(Shape, 'a', 'A') &&
-                         std::is_floating_point_v<T>) {
+      m_scan_set_integer = details::radix_16;
+    } else if constexpr (is_one_of(Shape, 'a', 'A') && std::is_floating_point_v<T>) {
       action(details::parse_number<T, details::chars_format::hex>());
-    } else if constexpr (is_one_of(Shape, 'e', 'E') &&
-                         std::is_floating_point_v<T>) {
+    } else if constexpr (is_one_of(Shape, 'e', 'E') && std::is_floating_point_v<T>) {
       action(details::parse_number<T, details::chars_format::scientific>());
-    } else if constexpr (is_one_of(Shape, 'f', 'F') &&
-                         std::is_floating_point_v<T>) {
+    } else if constexpr (is_one_of(Shape, 'f', 'F') && std::is_floating_point_v<T>) {
       action(details::parse_number<T, details::chars_format::fixed>());
-    } else if constexpr (is_one_of(Shape, 'g', 'G') &&
-                         std::is_floating_point_v<T>) {
+    } else if constexpr (is_one_of(Shape, 'g', 'G') && std::is_floating_point_v<T>) {
       action(details::parse_number<T, details::chars_format::general>());
     } else {
       static_assert(alignof(T) == 0, "No scan specification for T");
     }
-
     return *this;
   }
 
@@ -1588,6 +1621,7 @@ private:
       [](const std::string &value) { return value; }};
   std::vector<std::any> m_values;
   NArgsRange m_num_args_range{1, 1};
+  details::Radix m_scan_set_integer = details::radix_10;
   // Bit field of bool values. Set default value in ctor.
   bool m_accepts_optional_like_value : 1;
   bool m_is_optional : 1;
@@ -2256,7 +2290,7 @@ protected:
   preprocess_arguments(const std::vector<std::string> &raw_arguments) const {
     std::vector<std::string> arguments{};
     for (const auto &arg : raw_arguments) {
-      
+
       const auto argument_starts_with_prefix_chars =
           [this](const std::string &a) -> bool {
         if (!a.empty()) {
