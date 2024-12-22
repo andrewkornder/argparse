@@ -206,6 +206,20 @@ namespace argparse {
                     std::tuple_size_v<std::remove_reference_t<Tuple>>>{});
         }
 
+        template <class F, class Tuple, std::size_t... I>
+        constexpr decltype(auto) apply_tup_impl(F&& f, Tuple&& t,
+                                            std::index_sequence<I...> /*unused*/) {
+            return std::invoke(std::forward<F>(f), std::get<I>(std::forward<Tuple>(t))...);
+        }
+
+        template <class F, class Tuple>
+        constexpr decltype(auto) apply_tup(F&& f, Tuple&& t) {
+            return details::apply_tup_impl(
+                std::forward<F>(f), std::forward<Tuple>(t),
+                std::make_index_sequence<std::tuple_size_v<std::remove_reference_t<Tuple>>>{}
+            );
+        }
+
         constexpr auto pointer_range(std::string_view s) noexcept {
             return std::tuple(s.data(), s.data() + s.size());
         }
@@ -733,43 +747,52 @@ namespace argparse {
             return *this;
         }
 
-        template <class F, class... Args>
+
+        template <typename T = std::string, typename F, typename... Args>
         auto action(F&& callable, Args&&... bound_args)
-            -> std::enable_if_t<std::is_invocable_v<F, Args...> && std::is_void_v<std::invoke_result_t<F, Args...>>,
+            -> std::enable_if_t<std::is_invocable_v<F, Args..., T>,
                                 Argument&> {
             if constexpr (sizeof...(Args) == 0) {
-                m_post_action.emplace_back([&](const std::any& arg) {
-                    std::forward<F>(callable)();
-                });
+                m_post_action.emplace_back(
+                    [f = std::forward<F>(callable)]
+                    (const std::any& arg) mutable {
+                        std::invoke(std::forward<F>(f), std::any_cast<T>(arg));
+                    }
+                );
             } else {
                 m_post_action.emplace_back(
-                    [&](const std::any& arg) mutable {
-                        std::invoke(std::forward<F>(callable), std::forward<Args>(bound_args)...);
+                    [f = std::forward<F>(callable), tup = std::make_tuple(std::forward<Args>(bound_args)...)]
+                    (const std::any& arg) mutable {
+                        return details::apply_plus_one(f, tup, std::any_cast<T>(arg));
                     }
                 );
             }
             return *this;
         }
-        template <typename T = std::string, class F, class... Args>
-        auto action(F&& callable, Args&&... bound_args)
-            -> std::enable_if_t<std::is_invocable_v<F, T, Args...> && std::is_void_v<std::invoke_result_t<F, T, Args...>>,
+
+        template <typename F, typename... Args>
+        auto callback(F&& callable, Args&&... bound_args)
+            -> std::enable_if_t<std::is_invocable_v<F, Args...>,
                                 Argument&> {
             if constexpr (sizeof...(Args) == 0) {
-                m_post_action.emplace_back([&](const std::any& arg) {
-                    if constexpr (std::is_same_v<T, std::any>) std::forward<F>(callable)(arg);
-                    else std::forward<F>(callable)(std::any_cast<T>(arg));
-                });
+                m_post_action.emplace_back(
+                    [f = std::forward<F>(callable)]
+                    (const std::any&) mutable {
+                        std::invoke(std::forward<F>(f));
+                    }
+                );
             } else {
                 m_post_action.emplace_back(
-                    [&](const std::any& arg) mutable {
-                        if constexpr (std::is_same_v<T, std::any>) std::invoke(std::forward<F>(callable), arg, std::forward<Args>(bound_args)...);
-                        else std::invoke(std::forward<F>(callable), std::any_cast<T>(arg), std::forward<Args>(bound_args)...);
+                    [f = std::forward<F>(callable), tup = std::make_tuple(std::forward<Args>(bound_args)...)]
+                    (const std::any&) mutable {
+                        return details::apply_tup(f, tup);
                     }
                 );
             }
             return *this;
         }
-        template <class F, class... Args>
+
+        template <class F, typename... Args>
         auto process(F&& callable, Args&&... bound_args)
             -> std::enable_if_t<std::is_invocable_v<F, Args..., const std::string>
                                 && !std::is_void_v<std::invoke_result_t<F, Args..., const std::string>>,
@@ -777,9 +800,8 @@ namespace argparse {
             if constexpr (sizeof...(Args) == 0) {
                 m_process_action = std::forward<F>(callable);
             } else {
-                m_process_action = [f = std::forward<F>(callable),
-                    tup = std::make_tuple(std::forward<Args>(bound_args)...)](const std::string& opt) mutable {
-                    return details::apply_plus_one(f, tup, opt);
+                m_process_action = [&](const std::string& arg) {
+                    std::forward<F>(callable)(arg, std::forward<Args>(bound_args)...);
                 };
             }
             return *this;
@@ -792,7 +814,9 @@ namespace argparse {
             if (m_default_value.has_value()) {
                 var = std::any_cast<bool>(m_default_value);
             }
-            action([&var] { var = true; });
+            action<bool>([&var](const bool& s) {
+                var = s;
+            });
             return *this;
         }
 
@@ -801,15 +825,18 @@ namespace argparse {
             if (m_default_value.has_value()) {
                 var = std::any_cast<T>(m_default_value);
             }
-            action<T>([](const auto& s, T* const addr) { *addr = s; }, &var);
+            action<T>([&var](const T& s) {
+                var = s;
+            });
             return *this;
         }
+
         template <typename T, std::enable_if_t<std::is_arithmetic_v<T> || std::is_same_v<T, std::string>> * = nullptr>
         auto& store_into(std::vector<T>& var) {
             if (m_default_value.has_value()) {
                 var = std::any_cast<std::vector<T>>(m_default_value);
             }
-            action<T>([this, &var](const auto& s) {
+            action<T>([this, &var](const T& s) {
                 if (!m_is_used) {
                     var.clear();
                 }
@@ -824,12 +851,20 @@ namespace argparse {
             if (m_default_value.has_value()) {
                 var = std::any_cast<std::set<T>>(m_default_value);
             }
-            action<T>([this, &var](const auto& s) {
+            action<T>([this, &var](const T& s) {
                 if (!m_is_used) {
                     var.clear();
                 }
                 m_is_used = true;
                 var.insert(s);
+            });
+            return *this;
+        }
+
+        template<typename AssignFrom, typename AssignInto>
+        auto& assign_to(AssignInto& var) {
+            action<AssignFrom>([&var](const AssignFrom& value) {
+                var = value;
             });
             return *this;
         }
@@ -855,41 +890,25 @@ namespace argparse {
 
             if constexpr (is_one_of(Shape, 'd') && details::standard_integer<T>) {
                 process(details::parse_number<T, details::radix_10>());
-                m_scan_set_integer = details::radix_10;
-            }
-            else if constexpr (is_one_of(Shape, 'i') && details::standard_integer<T>) {
+            } else if constexpr (is_one_of(Shape, 'i') && details::standard_integer<T>) {
                 process(details::parse_number<T, details::radix_i>());
-                m_scan_set_integer = details::radix_i;
-            }
-            else if constexpr (is_one_of(Shape, 'u') && details::standard_unsigned_integer<T>) {
+            } else if constexpr (is_one_of(Shape, 'u') && details::standard_unsigned_integer<T>) {
                 process(details::parse_number<T, details::radix_10>());
-                m_scan_set_integer = details::radix_10;
-            }
-            else if constexpr (is_one_of(Shape, 'b') && details::standard_unsigned_integer<T>) {
+            } else if constexpr (is_one_of(Shape, 'b') && details::standard_unsigned_integer<T>) {
                 process(details::parse_number<T, details::radix_2>());
-                m_scan_set_integer = details::radix_2;
-            }
-            else if constexpr (is_one_of(Shape, 'o') && details::standard_unsigned_integer<T>) {
+            } else if constexpr (is_one_of(Shape, 'o') && details::standard_unsigned_integer<T>) {
                 process(details::parse_number<T, details::radix_8>());
-                m_scan_set_integer = details::radix_8;
-            }
-            else if constexpr (is_one_of(Shape, 'x', 'X') && details::standard_unsigned_integer<T>) {
+            } else if constexpr (is_one_of(Shape, 'x', 'X') && details::standard_unsigned_integer<T>) {
                 process(details::parse_number<T, details::radix_16>());
-                m_scan_set_integer = details::radix_16;
-            }
-            else if constexpr (is_one_of(Shape, 'a', 'A') && std::is_floating_point_v<T>) {
+            } else if constexpr (is_one_of(Shape, 'a', 'A') && std::is_floating_point_v<T>) {
                 process(details::parse_number<T, details::chars_format::hex>());
-            }
-            else if constexpr (is_one_of(Shape, 'e', 'E') && std::is_floating_point_v<T>) {
+            } else if constexpr (is_one_of(Shape, 'e', 'E') && std::is_floating_point_v<T>) {
                 process(details::parse_number<T, details::chars_format::scientific>());
-            }
-            else if constexpr (is_one_of(Shape, 'f', 'F') && std::is_floating_point_v<T>) {
+            } else if constexpr (is_one_of(Shape, 'f', 'F') && std::is_floating_point_v<T>) {
                 process(details::parse_number<T, details::chars_format::fixed>());
-            }
-            else if constexpr (is_one_of(Shape, 'g', 'G') && std::is_floating_point_v<T>) {
+            } else if constexpr (is_one_of(Shape, 'g', 'G') && std::is_floating_point_v<T>) {
                 process(details::parse_number<T, details::chars_format::general>());
-            }
-            else {
+            } else {
                 static_assert(alignof(T) == 0, "No scan specification for T");
             }
             return *this;
@@ -1048,7 +1067,7 @@ namespace argparse {
             if (num_args_max == 0) {
                 if (!dry_run) {
                     m_values.emplace_back(m_implicit_value);
-                    for (const auto post : m_post_action) {
+                    for (const auto& post : m_post_action) {
                         post(m_implicit_value);
                     }
                     m_is_used = true;
@@ -1648,7 +1667,6 @@ namespace argparse {
 
         std::vector<std::any> m_values;
         NArgsRange m_num_args_range{1, 1};
-        details::Radix m_scan_set_integer = details::radix_10;
         // Bit field of bool values. Set default value in ctor.
         bool m_accepts_optional_like_value : 1;
         bool m_is_optional : 1;
@@ -1673,9 +1691,9 @@ namespace argparse {
               m_parser_path(m_program_name) {
             if ((add_args & default_arguments::help) == default_arguments::help) {
                 add_argument("-h", "--help")
-                        .action([&] {
-                            os << help().str();
-                            if (m_exit_on_default_arguments) {
+                        .action<bool>([&os, &args = *this] (const bool) {
+                            os << args.help().str();
+                            if (args.m_exit_on_default_arguments) {
                                 std::exit(0);
                             }
                         })
@@ -1686,9 +1704,9 @@ namespace argparse {
             }
             if ((add_args & default_arguments::version) == default_arguments::version) {
                 add_argument("-v", "--version")
-                        .action([&] {
-                            os << m_version << std::endl;
-                            if (m_exit_on_default_arguments) {
+                        .action<bool>([&os, &args = *this] (const bool) {
+                            os << args.m_version << std::endl;
+                            if (args.m_exit_on_default_arguments) {
                                 std::exit(0);
                             }
                         })
@@ -2073,7 +2091,7 @@ namespace argparse {
             }
 
             for (size_t i_group = 0; i_group < parser.m_group_names.size(); ++i_group) {
-                stream << "\n" << parser.m_group_names[i_group] << " (detailed usage):\n";
+                stream << "\n" << parser.m_group_names[i_group] << "\n";
                 for (const auto& argument : parser.m_optional_arguments) {
                     if (argument.m_group_idx == i_group + 1 && !argument.m_is_hidden) {
                         stream.width(static_cast<std::streamsize>(longest_arg_length));
