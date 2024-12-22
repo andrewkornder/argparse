@@ -7,10 +7,10 @@ else()
 endif()
 
 project(argparse
-        VERSION 3.1.0 
-        DESCRIPTION "A single header argument parser for C++17"
-        HOMEPAGE_URL "https://github.com/p-ranav/argparse"
-        LANGUAGES CXX
+      VERSION 3.1.0
+      DESCRIPTION "A single header argument parser for C++17"
+      HOMEPAGE_URL "https://github.com/andrewkornder/argparse"
+      LANGUAGES CXX
 )
 
 option(ARGPARSE_INSTALL "Include an install target" ${ARGPARSE_IS_TOP_LEVEL})
@@ -28,12 +28,20 @@ target_include_directories(argparse INTERFACE
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>)
 
+
+
 if(ARGPARSE_BUILD_SAMPLES)
   add_subdirectory(samples)
 endif()
-  
-if(ARGPARSE_BUILD_TESTS)
-  add_subdirectory(test)
+
+if (DEFINED ARGPARSE_BUILD_TESTS)
+  if (ARGPARSE_BUILD_TESTS)
+    message("Building tests... (ARGPARSE_BUILD_TESTS=${ARGPARSE_BUILD_TESTS})")
+    add_subdirectory(test)
+  endif()
+  message("Enable tests by defining ARGPARSE_BUILD_TESTS to true (ARGPARSE_BUILD_TESTS=${ARGPARSE_BUILD_TESTS})")
+else()
+  message("Enable tests by defining ARGPARSE_BUILD_TESTS")
 endif()
   
 if(ARGPARSE_INSTALL)
