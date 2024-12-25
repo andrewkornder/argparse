@@ -737,6 +737,11 @@ namespace argparse {
             return *this;
         }
 
+        template<typename T>
+        Argument& implicit_value(const T& value) {
+            return implicit_value(std::any<T>(value));
+        }
+
         // This is shorthand for:
         //   program.add_argument("foo")
         //     .default_value(false)
