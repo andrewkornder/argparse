@@ -731,15 +731,11 @@ namespace argparse {
             return *this;
         }
 
-        Argument& implicit_value(std::any value) {
-            m_implicit_value = std::move(value);
+        template<typename Any>
+        Argument& implicit_value(Any&& value) {
+            m_implicit_value = std::any(value);
             m_num_args_range = NArgsRange{0, 0};
             return *this;
-        }
-
-        template<typename T>
-        Argument& implicit_value(const T& value) {
-            return implicit_value(std::any<T>(value));
         }
 
         // This is shorthand for:
